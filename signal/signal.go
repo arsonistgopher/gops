@@ -35,4 +35,7 @@ const (
 
 	// SetGCPercent sets the garbage collection target percentage.
 	SetGCPercent = byte(0x10)
+
+	// MemStatExport sets the garbage collection target percentage.
+	MemStatExport = byte(0x11)
 )

@@ -29,6 +29,7 @@ import (
 )
 
 const defaultAddr = "127.0.0.1:0"
+const dbName = "gops"
 
 var (
 	mu       sync.Mutex
@@ -112,6 +113,7 @@ func Listen(opts Options) error {
 }
 
 func listen() {
+
 	buf := make([]byte, 1)
 	for {
 		fd, err := listener.Accept()
@@ -183,6 +185,40 @@ func handle(conn io.ReadWriter, msg []byte) error {
 		runtime.GC()
 		_, err := conn.Write([]byte("ok"))
 		return err
+	case signal.MemStatExport:
+		var s runtime.MemStats
+		var host string
+		var err error
+		if host, err = os.Hostname(); err != nil {
+			host = "unknown"
+		}
+		runtime.ReadMemStats(&s)
+		fmt.Fprintf(conn, "\"pid\": \"%v\",", os.Getpid())
+		fmt.Fprintf(conn, "\"hostname\": \"%v\",", host)
+		fmt.Fprintf(conn, "\"appname\": \"%v\",", os.Args[0])
+		fmt.Fprintf(conn, "\"alloc\": %v,", uint64(s.Alloc))
+		fmt.Fprintf(conn, "\"total-alloc\": %v,", uint64(s.TotalAlloc))
+		fmt.Fprintf(conn, "\"sys\": %v,", uint64(s.Sys))
+		fmt.Fprintf(conn, "\"lookups\": %v,", uint64(s.Lookups))
+		fmt.Fprintf(conn, "\"mallocs\": %v,", uint64(s.Mallocs))
+		fmt.Fprintf(conn, "\"frees\": %v,", uint64(s.Frees))
+		fmt.Fprintf(conn, "\"heap-alloc\": %v,", uint64(s.HeapAlloc))
+		fmt.Fprintf(conn, "\"heap-sys\": %v,", uint64(s.HeapSys))
+		fmt.Fprintf(conn, "\"heap-idle\": %v,", uint64(s.HeapIdle))
+		fmt.Fprintf(conn, "\"heap-in-use\": %v,", uint64(s.HeapInuse))
+		fmt.Fprintf(conn, "\"heap-released\": %v,", uint64(s.HeapReleased))
+		fmt.Fprintf(conn, "\"heap-objects\": %v,", uint64(s.HeapObjects))
+		fmt.Fprintf(conn, "\"stack-in-use\": %v,", uint64(s.StackInuse))
+		fmt.Fprintf(conn, "\"stack-sys\": %v,", uint64(s.StackSys))
+		fmt.Fprintf(conn, "\"stack-mspan-inuse\": %v,", uint64(s.MSpanInuse))
+		fmt.Fprintf(conn, "\"stack-mspan-sys\": %v,", uint64(s.MSpanSys))
+		fmt.Fprintf(conn, "\"stack-mcache-inuse\": %v,", uint64(s.MCacheInuse))
+		fmt.Fprintf(conn, "\"stack-mcache-sys\": %v,", uint64(s.MCacheSys))
+		fmt.Fprintf(conn, "\"other-sys\": %v,", uint64(s.OtherSys))
+		fmt.Fprintf(conn, "\"gc-sys\": %v,", uint64(s.GCSys))
+		fmt.Fprintf(conn, "\"gc-pause-total\": %v,", uint64(time.Duration(s.PauseTotalNs)))
+		fmt.Fprintf(conn, "\"gc-pause\": %v,", uint64(s.PauseNs[(s.NumGC+255)%256]))
+		fmt.Fprintf(conn, "\"num-gc\": %v", uint64(s.NumGC))
 	case signal.MemStats:
 		var s runtime.MemStats
 		runtime.ReadMemStats(&s)

@@ -5,6 +5,8 @@
 
 gops is a command to list and diagnose Go processes currently running on your system.
 
+*__Note:__ This is a fork that contains a set of changes available in a patch. The added features extend gops to that statistics can be exported to InfluxDB for memory consumption.*
+
 ```sh
 $ gops
 983   980    uplink-soecks  go1.9   /usr/local/bin/uplink-soecks
@@ -18,6 +20,77 @@ $ gops
 ```sh
 $ go get -u github.com/google/gops
 ```
+
+*__Note:__, to use the memstatexport functionality which exports data to InfluxDB, you need to apply the patch located in this directory. Instructions follow*
+
+1.	Checkout this commit: 89672dbe3c4ba97d53af7e839e8097e1ccbb4977
+
+```bash
+git checkout 89672dbe3c4ba97d53af7e839e8097e1ccbb4977
+```
+
+2.	Clone this repository and use the patch. This changes the original dependencies so use `dep` to ensure they are present.
+
+```bash
+cd $GOPATH/src/github.com/
+mkdir arsonistgopher && cd arsonistgopher
+git clone https://github.com/arsonistgopher/gops
+cd $GOPATH/src/github.com/google/gops
+git am < $GOPATH/src/github.com/arsonistgopher/gops/0001-added-influxdb-capabilities.patch
+dep ensure
+go build
+```
+
+At this point, we have a working patched gops tool. Next, stand-up InfluxDB and Chronograf. Ensure that the dependencies for InfluxDB are present.
+
+3.	Build InfluxDB.
+
+```bash
+go get github.com/influxdata/influxdb
+cd $GOPATH/src/github.com/influxdata/influxdb
+dep ensure
+go install -tags uint64 ./...
+```
+
+Using the `influxdbconfig.toml` located in this repository, start InfluxDB.
+
+```bash
+influxd --config=$GOPATH/src/github.com/arsonistgopher/gops/influxdbconfig.toml
+```
+
+Next, grab Chronograf and add InfluxDB as a datasource.
+
+```bash
+docker pull chronograf
+docker run -d -p 8888:8888 chronograf
+```
+
+Login to Chronograf, create the data source and create a database for gops. The query is below.
+For instance, I create the InfluxDB host as: `http://host.docker.internal:8086`.
+
+```bash
+CREATE DATABASE gops;
+```
+
+4.		Build the hello example, get the PID and pass it to the modified gops tool.
+
+```bash
+cd $GOPATH/src/github.com/google/gops/examples/hello
+go build
+./hello
+```
+
+Now run the patched gops and start monitoring our memory statistics using the utility 'watch'. If you're not familiar with watch, it will run whatever command line argument that it has been passed every configured time period. By default this is every two seconds. As this is a diagnostic tool, this watch application provides a perfect way of running the `gops` client at regular time intervals without any further modifications.
+
+```bash
+ps aux | grep ./hello
+# Get the PID, then
+watch ./gops memstatexport <pid> http://influxDBIP:port dbname
+```
+
+Et voila. Here's a screen shot with a purdy graph. Tags available to filter on are: 'gops', 'hostname' and 'pid'. This tag set will allow you to get pid specifics for a given host machine under the gops dataset.
+
+*__Note:__ End of modification from Google's version.*
 
 ## Diagnostics
 
@@ -144,6 +217,14 @@ To print the current memory stats, run the following command:
 $ gops memstats (<pid>|<addr>)
 ```
 
+#### $ gops memstatexport (\<pid\>|\<addr\>) \<influxdbhost:port\> \<dbname\>
+
+To send the current memory stats to InfluxDB, run the following command:
+
+```sh
+$ gops memstatexport (<pid>|<addr>) <influxdbhost:port> <dbname>
+```
+
 #### $ gops gc (\<pid\>|\<addr\>)
 
 If you want to force run garbage collection on the target program, run `gc`.
@@ -198,4 +279,3 @@ gops allows you to start the runtime tracer for 5 seconds and examine the result
 ```sh
 $ gops trace (<pid>|<addr>)
 ```
-

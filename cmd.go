@@ -6,30 +6,62 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/gops/internal"
 	"github.com/google/gops/signal"
+	client "github.com/influxdata/influxdb/client/v2"
 )
 
+// A MemStats records statistics about the memory allocator.
+type MemStats struct {
+	PID          string `json:"pid"`
+	Hostname     string `json:"hostname"`
+	AppName      string `json:"appname"`
+	Alloc        uint64 `json:"alloc"`
+	TotalAlloc   uint64 `json:"total-alloc"`
+	Sys          uint64 `json:"sys"`
+	Lookups      uint64 `json:"lookups"`
+	Mallocs      uint64 `json:"mallocs"`
+	Frees        uint64 `json:"frees"`
+	HeapAlloc    uint64 `json:"heap-alloc"`
+	HeapSys      uint64 `json:"heap-sys"`
+	HeapIdle     uint64 `json:"heap-idle"`
+	HeapInuse    uint64 `json:"heap-in-use"`
+	HeapReleased uint64 `json:"heap-released"`
+	HeapObjects  uint64 `json:"heap-objects"`
+	StackInuse   uint64 `json:"stack-in-use"`
+	StackSys     uint64 `json:"stack-sys"`
+	MSpanInuse   uint64 `json:"stack-mspan-inuse"`
+	MSpanSys     uint64 `json:"stack-mspan-sys"`
+	MCacheInuse  uint64 `json:"stack-mcache-inuse"`
+	MCacheSys    uint64 `json:"stack-mcache-sys"`
+	GCSys        uint64 `json:"gc-sys"`
+	OtherSys     uint64 `json:"other-sys"`
+}
+
 var cmds = map[string](func(addr net.TCPAddr, params []string) error){
-	"stack":      stackTrace,
-	"gc":         gc,
-	"memstats":   memStats,
-	"version":    version,
-	"pprof-heap": pprofHeap,
-	"pprof-cpu":  pprofCPU,
-	"stats":      stats,
-	"trace":      trace,
-	"setgc":      setGC,
+	"stack":         stackTrace,
+	"gc":            gc,
+	"memstats":      memStats,
+	"version":       version,
+	"pprof-heap":    pprofHeap,
+	"pprof-cpu":     pprofCPU,
+	"stats":         stats,
+	"trace":         trace,
+	"setgc":         setGC,
+	"memstatexport": memStatExport,
 }
 
 func setGC(addr net.TCPAddr, params []string) error {
@@ -56,6 +88,10 @@ func gc(addr net.TCPAddr, _ []string) error {
 
 func memStats(addr net.TCPAddr, _ []string) error {
 	return cmdWithPrint(addr, signal.MemStats)
+}
+
+func memStatExport(addr net.TCPAddr, params []string) error {
+	return memStatInfluxDBExport(addr, signal.MemStatExport, params)
 }
 
 func version(addr net.TCPAddr, _ []string) error {
@@ -163,6 +199,103 @@ func cmdWithPrint(addr net.TCPAddr, c byte, params ...byte) error {
 		return err
 	}
 	fmt.Printf("%s", out)
+	return nil
+}
+
+// Return a "JSONified" string. I.e. just append and pre-append {}
+func memStatInfluxDBExport(addr net.TCPAddr, c byte, params []string) error {
+	// To add more functionality, add params data here and to main file in help const
+	// Current params:
+	// 		params[0] = host:port string
+	// 		params[1] = database
+
+	if len(params) < 2 {
+		return errors.New("missing parameters")
+	}
+
+	emptyparams := []byte{}
+
+	out, err := cmd(addr, c, emptyparams...)
+	if err != nil {
+		return err
+	}
+	jsonout := fmt.Sprintf("{%s}", out)
+	fmt.Printf("%s\n", jsonout)
+
+	// Create a new HTTPClient
+	ic, err := client.NewHTTPClient(client.HTTPConfig{
+		Addr: params[0],
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ic.Close()
+
+	// Create a new point batch
+	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
+		Database:  params[1],
+		Precision: "s",
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create a point and add to batch
+	tags := map[string]string{"gops": "gops-values"}
+
+	// Marshall 'jsonout' on to the data structure
+	s := MemStats{}
+
+	err = json.Unmarshal([]byte(jsonout), &s)
+	if err != nil {
+		fmt.Print(err)
+	}
+
+	fields := map[string]interface{}{
+		"alloc":              uint64(s.Alloc),
+		"total-alloc":        uint64(s.TotalAlloc),
+		"sys":                uint64(s.Sys),
+		"lookups":            uint64(s.Lookups),
+		"mallocs":            uint64(s.Mallocs),
+		"frees":              uint64(s.Frees),
+		"heap-alloc":         uint64(s.HeapAlloc),
+		"heap-sys":           uint64(s.HeapSys),
+		"heap-idle":          uint64(s.HeapIdle),
+		"heap-in-use":        uint64(s.HeapInuse),
+		"heap-released":      uint64(s.HeapReleased),
+		"heap-objects":       uint64(s.HeapObjects),
+		"stack-in-use":       uint64(s.StackInuse),
+		"stack-sys":          uint64(s.StackSys),
+		"other-sys":          uint64(s.OtherSys),
+		"stack-mspan-inuse":  uint64(s.MSpanInuse),
+		"stack-mspan-sys":    uint64(s.MSpanSys),
+		"stack-mcache-inuse": uint64(s.MCacheInuse),
+		"stack-mcache-sys":   uint64(s.MCacheSys),
+		"gc-sys":             uint64(s.GCSys),
+	}
+
+	// Issue: https://github.com/arsonistgopher/gops/issues/1#issue-352514390 {
+	tags["hostname"] = s.Hostname
+	tags["pid"] = s.PID
+	tags["appname"] = s.AppName
+
+	pt, err := client.NewPoint("gops", tags, fields, time.Now())
+	if err != nil {
+		fmt.Print(err)
+	}
+	bp.AddPoint(pt)
+
+	// Write the batch
+	if err := ic.Write(bp); err != nil {
+		fmt.Print(err)
+	}
+
+	// Close client resources
+	if err := ic.Close(); err != nil {
+		fmt.Print(err)
+	}
+
 	return nil
 }
 
